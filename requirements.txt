@@ -1,0 +1,6 @@
+pdfplumber
+pymupdf
+openpyxl
+openai
+xlwings
+python-dotenv

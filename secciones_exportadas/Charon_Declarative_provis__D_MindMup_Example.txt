@@ -1,0 +1,138 @@
+ARTÍCULO : Charon_Declarative_provisioning_and_deployment.pdf
+SECCIÓN  : D. MindMup Example
+PALABRAS : 739
+============================================================
+
+We now show a larger example of a Charon deployment:
+online open source application that allows users to create
+mindmaps and share these with other users. MindMup is
+a Ruby application designed to run on Amazon EC2 and
+use Amazon S3 for storage. To make the example more
+compelling, we deploy this application using a multi-machine
+network that implements the common deployment pattern of
+using multiple backend application servers with a reverse
+proxy in front for fault tolerance and load balancing.
+The MindMup network consists of three machines: a reverse
+proxy server, and two application servers running the applica-
+tion code. Figure 1 shows a Charon speciﬁcation of the logical
+aspects of of the MindMup deployment, i.e. the software pack-
+ages and conﬁguration required on each machine. The network
+speciﬁcation deﬁnes the three machines proxy, backend1 and
+backend2.
+The MindMup application code runs on the machines
+backend1 and backend2, deﬁned at
+3, which have the same
+conﬁguration. The mindmup function at 1 includes the NixOS
+
+• An Amazon S3 bucket to store the mindmaps.
+
+• An Amazon EC2 keypair to securely connect to the
+instances.
+
+• An Amazon IAM role, a security policy to restrict access
+to the S3 bucket.
+
+Figure 2 shows the (somewhat abbreviated) physical net-
+work speciﬁcation of the MindMup deployment. All machines
+and resources are provisioned in the us-east-1 EC2 region. The
+speciﬁcations at
+13 and
+6 deﬁne the machines that we want
+to instantiate on Amazon EC2 with its desired properties such
+as type and region.
+In addition, the non-machine resources are speciﬁed. The
+IAM role deﬁnition at
+12 ensures that different deployments
+of the same application do not interfere with each other. The
+role is deﬁned to allow all S3 operations on the S3 bucket
+
+19
+
+from our continuous build system. Since these are identical to
+production deployments, the gap between development and op-
+erational use is reduced (preventing the common phenomenon
+of code being “thrown over the wall” to operations).
+Charon also offers us the ease of enabling elasticity in
+deployments in a declarative way, where the number of ma-
+chines is scaled up or down depending on requirements (e.g. to
+shard the database across a variable number of machines). For
+instance, we can generalise the MindMup network to support a
+variable number of backends: rather than hardcoding backend1
+and backend2, we just write
+
+let
+
+region = "us-east-1";
+accessKeyId = "mindmup";
+mindmup =
+6
+{ deployment.targetEnv = "ec2";
+deployment.ec2.region = region;
+deployment.ec2.keyPair =
+7
+resources.ec2KeyPairs.mindmup-kp.name;
+deployment.ec2.instanceProfile =
+8
+resources.iamRoles.mindmup-role.name;
+services.mindmup.s3BucketName =
+9
+resources.s3Buckets.mindmup-s3.name;
+};
+in {
+resources.s3Buckets.mindmup-bucket =
+10
+{ inherit region accessKeyId; };
+resources.ec2KeyPairs.mindmup-kp =
+11
+{ inherit region accessKeyId; };
+resources.iamRoles.mindmup-role =
+12
+{ inherit accessKeyId;
+policy = ...;
+};
+backend1 = mindmup;
+backend2 = mindmup;
+proxy =
+13
+{ deployment.targetEnv = "ec2";
+deployment.ec2.region = region; ...
+};
+}
+
+let makeBackend = i: { ... };
+in map makeBackend (range 0 n)
+
+to generate a list of n backend machines. Similarly, the
+conﬁguration of the reverse proxy in Figure 1 can map over
+this list to emit BalancerMember lines for each backend
+machine. Changing n and running charon deploy will then
+cause machines to be created or destroyed, and the proxy
+conﬁguration to be updated, as necessary.
+We have used Charon to deploy clusters of up to 52
+machines. Charon was primarily designed to improve the man-
+ageability of many deployments with different conﬁgurations,
+rather than a few large deployments of thousands of identical
+machines. More work will be needed to support the latter.
+Another scenario where Charon has shown its strength
+is in allowing to easily deﬁne and run benchmarks in a
+reproducible way on different conﬁgurations, such as varying
+kernel versions, application versions, RAID setup and EC2
+instance sizes. The NixOS module system and its declarativity
+allow for easy composition of such variants.
+
+Fig. 2. MindMup physical network speciﬁcation
+
+created as part of this deployment. Amazon IAM uses so-
+called Amazon Resource Names (ARN) to refer to Amazon
+provisioned resources. The role is applied at 8 to the backend
+machines only, as the reverse proxy does not need to have
+access to the S3 bucket. The EC2 keypair mindmup-kp is
+deﬁned at
+11 and is applied to all machines in the network
+(e.g. at
+7). The S3 bucket mindmup-s3, used to store the
+mindmaps, is deﬁned at
+10. The application is conﬁgured to
+use this bucket at
+9 using a conﬁguration option deﬁned in
+the MindMup NixOS module.

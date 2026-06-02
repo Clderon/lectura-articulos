@@ -1,0 +1,163 @@
+Necesito que construyas un sistema de automatización en Python que procese artículos académicos en PDF y llene automáticamente un Excel existente usando DeepSeek como modelo de análisis.
+
+## ARCHIVO EXCEL
+Ruta: C:\Cursos\Diseño de Investigacion I\Revición de Artículos.xlsx
+Hoja 1: "Revisión de Articulos"
+Hoja 2: "Lectura Selectiva"
+Ya tiene 10 registros, el script debe continuar desde el artículo 11 respetando el formato exacto existente.
+
+## COLUMNAS HOJA 1 — "Revisión de Articulos"
+N° | Artículo (Título) | Autor(es) | Base de Datos | Fuente | Nivel Q (1-4) | SJR | H-Index | N° Citas | Pertinencia | Actualidad | Rigor | Fuente (Calidad) | Impacto | Ética | Puntaje | Decisión | Motivo Rechazo F2
+
+El script llena SOLO estas columnas (el resto lo llena el usuario manualmente):
+N° | Artículo (Título) | Autor(es) | Pertinencia | Actualidad | Rigor | Fuente (Calidad) | Impacto | Ética | Puntaje | Decisión | Motivo Rechazo F2
+
+## COLUMNAS HOJA 2 — "Lectura Selectiva"
+N° | Autor / Año | Objetivo | Método | Hallazgo | Limitación | Uso en tu tesis
+
+El script llena TODAS estas columnas.
+
+## CARPETA DE PDFs
+Preguntarle al usuario la ruta de la carpeta donde están los PDFs al iniciar el script.
+
+## FLUJO DE PROCESAMIENTO
+1. Leer todos los PDFs de la carpeta ordenados por nombre
+2. Procesar de 2 en 2 artículos por chat (conversación nueva cada 2 artículos)
+3. Por cada artículo:
+   a. Extraer texto del PDF con pdfplumber
+   b. Detectar y separar secciones (Introducción, Metodología, Resultados, Conclusión, etc.)
+   c. Cortar el texto antes de "Referencias", "Bibliography", "Works Cited" o similares
+   d. Si una sección es larga dividirla en partes manejables (máx 3000 palabras por envío)
+   e. Enviar cada sección a DeepSeek con el mensaje de recepción
+   f. Al terminar todas las secciones enviar "CERRAR ARTÍCULO N°[X]"
+   g. Recibir las 2 tablas de DeepSeek
+   h. Parsear los resultados
+   i. Escribir en Hoja 1 y Hoja 2 del Excel en la fila correcta
+4. Continuar con el siguiente par de artículos en chat nuevo
+
+## EXTRACCIÓN DE PDF
+- Usar pdfplumber como principal
+- Manejar PDFs de 2 columnas correctamente
+- Extraer texto de tablas como texto estructurado
+- Incluir pies de figura como texto
+- Omitir imágenes pero conservar su descripción textual
+- Si el texto extraído está vacío o es ilegible intentar con pymupdf como fallback
+
+## API DEEPSEEK
+- Usar la API de DeepSeek (endpoint compatible con OpenAI)
+- El usuario ingresará su API key al iniciar
+- Modelo: deepseek-chat
+- Temperatura: 0.1 (respuestas consistentes)
+- Cada par de artículos = conversación nueva (messages limpio)
+- El primer mensaje de cada conversación nueva es el PROMPT MAESTRO siguiente
+
+## PROMPT MAESTRO (enviar al inicio de cada chat nuevo)
+---
+Eres un asistente de investigación especializado en revisiones sistemáticas. Estás apoyando un Estudio de Mapeo Sistemático (SMS) sobre Infrastructure as Code (IaC).
+
+CONTEXTO DEL ESTUDIO:
+Título: "Estudio de mapeo sistemático de los enfoques declarativos e imperativos en infraestructura como código: tendencias de investigación, paradigmas y soporte de herramientas"
+
+En este chat analizarás 2 artículos completos. Se te enviarán sección por sección (introducción, metodología, resultados, conclusión, etc.).
+
+INSTRUCCIONES DE RECEPCIÓN:
+- Cuando recibas una sección responde SOLO: "Sección [NOMBRE] del Artículo [N°] recibida."
+- NO analices ni generes tablas hasta que recibas el mensaje: "CERRAR ARTÍCULO N°[X]"
+- Cuando recibas ese mensaje genera las DOS tablas siguientes.
+
+TABLA 1 — RÚBRICA DE VALIDACIÓN
+| Campo | Valor |
+|---|---|
+| N° | |
+| Artículo (Título) | |
+| Autor(es) | |
+| Pertinencia (0-2) | |
+| Actualidad (0-2) | |
+| Rigor (0-2) | |
+| Fuente Calidad (0-2) | |
+| Impacto (0-2) | |
+| Ética (0-2) | |
+| Puntaje Total (/12) | |
+| Decisión | |
+| Motivo Rechazo F2 | (solo si RECHAZADO F2, sino dejar vacío) |
+
+CRITERIOS DE PUNTUACIÓN:
+- Pertinencia (0-2): ¿IaC es el tema principal?
+  0 = mención secundaria o contexto
+  1 = relevante pero comparte protagonismo
+  2 = tema central del artículo
+- Actualidad (0-2): año de publicación adecuado
+  0 = desactualizado
+  1 = aceptable pero no reciente
+  2 = reciente y vigente
+- Rigor (0-2): método, datos, análisis y limitaciones
+  0 = ausente o poco claro
+  1 = parcial, faltan detalles
+  2 = bien descritos
+- Fuente Calidad (0-2): revista o conferencia
+  0 = no indexada
+  1 = indexada pero bajo perfil
+  2 = indexada y verificable
+- Impacto (0-2): citaciones o relevancia técnica
+  0 = sin citaciones ni relevancia
+  1 = moderadas o media
+  2 = alto número o alta relevancia
+- Ética (0-2): transparencia
+  0 = sin DOI ni afiliaciones, editorial dudosa
+  1 = parciales, editorial aceptable
+  2 = DOI, afiliaciones completas, editorial confiable
+
+CRITERIO DE DECISIÓN:
+- INCLUIDO: IaC es el tema principal en cualquier aspecto (declarativo, imperativo, híbrido, herramientas, seguridad, adopción, desafíos, comparativas)
+- RECHAZADO F2: IaC aparece solo como contexto, introducción o mención de paso, y el tema principal es otro
+
+TABLA 2 — FICHA DEL ARTÍCULO
+| Campo | Contenido |
+|---|---|
+| N° | |
+| Autor / Año | |
+| Objetivo | |
+| Método | |
+| Hallazgo | |
+| Limitación | |
+| Uso en tu tesis | |
+
+CRITERIOS TABLA 2:
+- Objetivo: qué problema o pregunta aborda
+- Método: cómo lo investiga
+- Hallazgo: resultado o conclusión principal
+- Limitación: restricciones que el artículo reconoce
+- Uso en tu tesis: cómo aporta al SMS, qué enfoque cubre, qué pregunta de investigación responde
+
+IMPORTANTE:
+- Genera AMBAS tablas juntas al recibir "CERRAR ARTÍCULO N°[X]"
+- No inventes datos que no estén en el texto
+- Si un dato no está disponible escribe: No especificado
+
+Responde ahora: "Listo, esperando secciones del Artículo N°[X] y N°[X]"
+---
+
+## MANEJO DE ERRORES
+- Si DeepSeek falla en un artículo: registrar el error, continuar con el siguiente y al final mostrar lista de artículos fallidos
+- Si el PDF no se puede leer: registrar como error y continuar
+- Si el Excel está abierto: avisar al usuario que lo cierre antes de continuar
+- Guardar el Excel después de cada artículo procesado (no solo al final) para no perder progreso
+
+## PROGRESO EN CONSOLA
+Mostrar en tiempo real:
+- Artículo actual que se está procesando (nombre del PDF)
+- Sección que se está enviando
+- Confirmación cuando se escribe en Excel
+- Progreso general: "Procesando artículo 3 de 50"
+- Al finalizar: resumen de cuántos se incluyeron, cuántos rechazados F2 y cuántos con error
+
+## INSTALACIÓN
+Al inicio del script verificar si están instaladas las librerías necesarias:
+pdfplumber, pymupdf, openpyxl, openai (para conectar con DeepSeek que es compatible)
+Si alguna falta mostrar el comando pip install correspondiente y detener el script.
+
+## EJECUCIÓN EN SEGUNDO PLANO
+El script debe poder correr minimizado en una terminal sin interferir con el trabajo del usuario. No debe requerir ninguna interacción del usuario durante el procesamiento, solo al inicio para:
+1. Ingresar API key de DeepSeek
+2. Confirmar la ruta de la carpeta de PDFs
+3. Confirmar desde qué número de artículo continuar (default: 11)
