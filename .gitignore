@@ -42,9 +42,10 @@ config_local.py
 *.pdf
 /Analisis-Prueba/
 /analisis-prueba/
-*.xlsx
-*.xls
-!requirements.txt
+
+# Excel (generados durante análisis - versionan manualmente si es necesario)
+# *.xlsx
+# *.xls
 
 # Reportes y logs
 reporte_procesamiento.txt
@@ -53,3 +54,11 @@ reporte_procesamiento.txt
 # Temporal
 .tmp/
 temp/
+.mineru_output/
+mineru_output/
+
+# Archivos generados por pipeline (pueden regenerarse)
+local/output/*/
+pymupdf/output/
+local/work_list.json
+pymupdf/work_list.json

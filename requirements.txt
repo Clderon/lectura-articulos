@@ -4,3 +4,7 @@ openpyxl
 openai
 xlwings
 python-dotenv
+mineru-vl-utils[transformers]
+torch
+torchvision
+Pillow

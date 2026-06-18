@@ -6,8 +6,19 @@ Usa DeepSeek como motor de análisis (endpoint compatible OpenAI).
 
 import sys
 import os
+
+# Forzar UTF-8 en Windows para caracteres especiales
+if sys.platform == "win32":
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Nota: No se necesita sys.set_int_max_str_digits() con mineru-vl-utils[transformers]
+# El flujo correcto (PDF → imágenes → análisis) evita el error de torch._dynamo
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║              CARGAR CONFIGURACIÓN DESDE .env                 ║
@@ -28,6 +39,7 @@ MODO_VERIFICACION = int(os.getenv("MODO_VERIFICACION", "0"))
 MAX_WORDS_PER_CHUNK = int(os.getenv("MAX_WORDS_PER_CHUNK", "6000"))
 SHEET1_NAME = os.getenv("SHEET1_NAME", "Revisión de Artículos")
 SHEET2_NAME = os.getenv("SHEET2_NAME", "Lectura Selectiva")
+TEST_MINERU = int(os.getenv("TEST_MINERU", "0"))
 
 # Validar configuración obligatoria
 if not DEEPSEEK_API_KEY:
@@ -55,6 +67,10 @@ REQUIRED_PACKAGES = {
     "openpyxl": "openpyxl",
     "openai": "openai",
     "xlwings": "xlwings",
+    "mineru_vl_utils": "mineru-vl-utils[transformers]",
+    "transformers": "transformers",
+    "torch": "torch",
+    "PIL": "Pillow",
 }
 
 missing_packages = []
@@ -76,6 +92,7 @@ import fitz  # pymupdf
 import openpyxl
 import xlwings as xw
 from openai import OpenAI
+import time as time_module  # Para evitar conflicto con variable time en otras partes
 
 # ─────────────────────────── Constantes ───────────────────────────
 
@@ -264,6 +281,84 @@ Responde ahora: "Listo, esperando secciones del Artículo N°{num1} y N°{num2}"
 
 # ─────────────────────────── Extracción de PDF ───────────────────────────
 
+def extract_with_mineru_vl(pdf_path: str) -> str:
+    """
+    Flujo correcto: PDF → imágenes → MinerU Vision-Language Model → texto
+    Usa mineru-vl-utils[transformers] para GPU acceleration.
+    """
+    from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+    from PIL import Image
+    from mineru_vl_utils import MinerUClient
+    import io
+
+    try:
+        print("    Extrayendo con MinerU VL (PDF → imágenes → análisis)...")
+        start_time = time.time()
+
+        # Paso 1: Convertir PDF a imágenes
+        pdf_doc = fitz.open(pdf_path)
+        images = []
+
+        for page_num in range(len(pdf_doc)):
+            pix = pdf_doc[page_num].get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom para mejor OCR
+            img_data = pix.tobytes("png")
+            image = Image.open(io.BytesIO(img_data))
+            images.append(image)
+
+        pdf_doc.close()
+
+        # Paso 2: Cargar modelo MinerU VL
+        print(f"    Cargando modelo MinerU Vision-Language (Qwen2VL)...")
+
+        # Verificar GPU disponible
+        try:
+            import torch
+            gpu_available = torch.cuda.is_available()
+            gpu_name = torch.cuda.get_device_name(0) if gpu_available else "No"
+            print(f"    GPU disponible: {gpu_available} ({gpu_name})")
+        except:
+            print(f"    No se pudo detectar GPU")
+
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            "opendatalab/MinerU2.5-2509-1.2B",
+            dtype="auto",
+            device_map="auto"  # Usa GPU si está disponible
+        )
+
+        processor = AutoProcessor.from_pretrained(
+            "opendatalab/MinerU2.5-2509-1.2B",
+            use_fast=True
+        )
+
+        client = MinerUClient(
+            backend="transformers",
+            model=model,
+            processor=processor
+        )
+
+        # Paso 3: Procesar cada imagen
+        extracted_text = []
+        for i, image in enumerate(images):
+            print(f"    Procesando página {i+1}/{len(images)}...")
+            blocks = client.two_step_extract(image)
+
+            # Extraer texto de cada bloque
+            for block in blocks:
+                if block.type == "text" and block.content:
+                    extracted_text.append(block.content)
+
+        final_text = "\n".join(extracted_text)
+        elapsed = time.time() - start_time
+
+        print(f"    ✓ Éxito en {elapsed:.2f}s ({len(final_text.split())} palabras)")
+
+        return final_text
+
+    except Exception as e:
+        print(f"    [MinerU VL] Error: {e}")
+        return ""
+
+
 def extract_with_pdfplumber(pdf_path: str) -> str:
     parts = []
     try:
@@ -400,17 +495,80 @@ def extract_with_pymupdf(pdf_path: str) -> str:
 
 def extract_pdf_text(pdf_path: str) -> str:
     """
-    Extrae el texto del PDF. Usa pymupdf como principal porque maneja mejor
-    los PDFs de 2 columnas (separa columnas por posición). pdfplumber como fallback.
+    Extrae PDF con pymupdf (rápido, funciona sin GPU).
+    Nota: MinerU VL sin GPU es demasiado lento (CPU solo).
     """
-    print("    Extrayendo con pymupdf (manejo de columnas)...")
     text = extract_with_pymupdf(pdf_path)
-    if len(text.strip()) < 200:
-        print("    Texto insuficiente, usando pdfplumber como fallback...")
-        text = extract_with_pdfplumber(pdf_path)
-    if len(text.strip()) < 200:
-        raise ValueError("No se pudo extraer texto legible del PDF.")
-    return text
+    if len(text.strip()) >= 200:
+        return text
+
+    raise ValueError(f"Extracción pymupdf falló para: {pdf_path}")
+
+
+def test_mineru_mode():
+    """Prueba MinerU con el primer PDF de la carpeta. Muestra tiempos y resultado."""
+    import time
+    from pathlib import Path
+
+    pdf_files = sorted(Path(PDF_FOLDER).glob("*.pdf"))
+    if not pdf_files:
+        print("[ERROR] No hay PDFs en la carpeta.")
+        sys.exit(1)
+
+    pdf_path = pdf_files[0]
+    print()
+    print("=" * 70)
+    print("  TEST MODE — MINERU EXTRACTION")
+    print("=" * 70)
+    print(f"\n  PDF: {pdf_path.name}")
+    print(f"  Carpeta: {PDF_FOLDER}\n")
+
+    # Test MinerU
+    print("  ─────────────────────────────────────────────────────")
+    print("  1. MINERU (GPU acelerado)")
+    print("  ─────────────────────────────────────────────────────")
+    start = time.time()
+    text_mineru = extract_with_mineru(str(pdf_path))
+    time_mineru = time.time() - start
+
+    if text_mineru:
+        print(f"  ✓ Éxito en {time_mineru:.2f}s")
+        print(f"  Palabras extraídas: {len(text_mineru.split())}")
+        print(f"  Primeras 300 caracteres:\n    {text_mineru[:300]}...\n")
+    else:
+        print(f"  ✗ Falló en {time_mineru:.2f}s\n")
+
+    # Comparar con pymupdf
+    print("  ─────────────────────────────────────────────────────")
+    print("  2. PYMUPDF (para comparar)")
+    print("  ─────────────────────────────────────────────────────")
+    start = time.time()
+    text_pymupdf = extract_with_pymupdf(str(pdf_path))
+    time_pymupdf = time.time() - start
+
+    if text_pymupdf:
+        print(f"  ✓ Éxito en {time_pymupdf:.2f}s")
+        print(f"  Palabras extraídas: {len(text_pymupdf.split())}\n")
+    else:
+        print(f"  ✗ Falló en {time_pymupdf:.2f}s\n")
+
+    # Resumen
+    print("  ─────────────────────────────────────────────────────")
+    print("  RESUMEN")
+    print("  ─────────────────────────────────────────────────────")
+    if text_mineru:
+        speedup = time_pymupdf / time_mineru if time_mineru > 0 else 0
+        print(f"  MinerU:  {time_mineru:.2f}s ({len(text_mineru.split())} palabras)")
+        print(f"  PyMuPDF: {time_pymupdf:.2f}s ({len(text_pymupdf.split())} palabras)")
+        print(f"  Aceleración: {speedup:.1f}x más rápido")
+    else:
+        print(f"  MinerU: FALLÓ — usando fallback")
+        print(f"  PyMuPDF: {time_pymupdf:.2f}s ({len(text_pymupdf.split())} palabras)")
+
+    print("\n" + "=" * 70)
+    print("  Para procesar artículos, cambia TEST_MINERU=0 en .env")
+    print("=" * 70)
+    sys.exit(0)
 
 
 # Secciones que vale la pena rescatar aunque aparezcan después de REFERENCES
@@ -1495,6 +1653,10 @@ def close_report(stats: dict):
 # ─────────────────────────── Main ───────────────────────────
 
 def main():
+    # Verificar si está en modo test de MinerU
+    if TEST_MINERU == 1:
+        test_mineru_mode()
+
     print("=" * 62)
     print("   PROCESADOR AUTOMÁTICO DE ARTÍCULOS ACADÉMICOS → EXCEL")
     print("   Motor de análisis: DeepSeek")
